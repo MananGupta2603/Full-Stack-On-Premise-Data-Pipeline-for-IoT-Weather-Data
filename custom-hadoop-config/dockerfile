@@ -1,0 +1,8 @@
+FROM bde2020/hadoop-datanode:2.0.0-hadoop3.2.1-java8
+
+COPY core-site.xml /etc/hadoop/core-site.xml
+COPY hdfs-site.xml /etc/hadoop/hdfs-site.xml
+
+RUN chown root:root /etc/hadoop/core-site.xml /etc/hadoop/hdfs-site.xml
+
+CMD ["bash", "-c", "hdfs datanode"]

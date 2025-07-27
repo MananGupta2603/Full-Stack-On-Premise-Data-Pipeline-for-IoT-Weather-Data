@@ -1,0 +1,286 @@
+services:
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.0.1
+    container_name: zookeeper
+    restart: always
+    ports:
+      - "2181:2181"
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    networks:
+      - airflow_net
+
+
+  kafka:
+    image: confluentinc/cp-kafka:7.0.1
+    container_name: kafka
+    restart: always
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+
+      # 🔑 These two are critical
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,PLAINTEXT_INTERNAL://0.0.0.0:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_INTERNAL://kafka:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_INTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT_INTERNAL
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+    
+    networks:
+      - airflow_net
+
+
+
+
+
+  kafdrop:
+      image: obsidiandynamics/kafdrop
+      container_name: kafdrop
+      restart: always
+      depends_on:
+        - kafka
+      ports:
+        - "9001:9000"
+      environment:
+        KAFKA_BROKER_CONNECT: kafka:29092
+      networks:
+        - airflow_net
+
+  mysql:
+    image: mysql:5.7
+    container_name: mysql
+    restart: always
+    command: --explicit_defaults_for_timestamp=1
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+       
+    ports:
+      - "3306:3306"
+    volumes:
+      - ./mysql/init.sql:/docker-entrypoint-initdb.d/init.sql
+
+    networks:
+      - airflow_net
+
+  postgres:
+    image: postgres:13
+    container_name: postgres
+    restart: always
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: metastore  
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./postgres-init:/docker-entrypoint-initdb.d
+    networks:
+      - airflow_net
+
+  
+  airflow:
+    build:
+      context: ./airflow
+    container_name: airflow-webserver
+    restart: always
+    depends_on:
+      - kafka
+      - mysql
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__SQL_ALCHEMY_CONN: mysql+pymysql://root:root@mysql/airflow
+      AIRFLOW__CORE__FERNET_KEY: SuGOBeuY1tEk9by2BQZN1poyWRAUyT02YoW51aK1_ho=
+      AIRFLOW__CORE__LOAD_EXAMPLES: 'False'
+      AIRFLOW__WEBSERVER__SECRET_KEY: 'a7d0e8c9e3f20f295d0f1cb0df26e9d72b0cdd33e7e6a07c36010c8f8bfe4f7d'
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/scripts:/opt/airflow/scripts
+      - ./airflow/data:/opt/airflow/data
+    ports:
+      - "8082:8080"
+    command: >
+      bash -c "airflow db init &&
+               airflow users create --username admin --password admin --firstname Manan --lastname Gupta --role Admin --email admin@example.com &&
+               airflow webserver"
+    networks:
+      - airflow_net
+
+  airflow-scheduler:
+    build:
+      context: ./airflow
+    container_name: airflow-scheduler
+    restart: always
+    depends_on:
+      - mysql
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__SQL_ALCHEMY_CONN: mysql+pymysql://root:root@mysql/airflow
+      AIRFLOW__CORE__FERNET_KEY: SuGOBeuY1tEk9by2BQZN1poyWRAUyT02YoW51aK1_ho=
+      AIRFLOW__WEBSERVER__SECRET_KEY: 'a7d0e8c9e3f20f295d0f1cb0df26e9d72b0cdd33e7e6a07c36010c8f8bfe4f7d'
+    command: airflow scheduler
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/scripts:/opt/airflow/scripts
+      - ./airflow/data:/opt/airflow/data
+    networks:
+      - airflow_net
+
+
+  spark-master:
+    image: bitnami/spark:3.5.0
+    container_name: spark-master
+    environment:
+      - SPARK_MODE=master
+      
+    ports:
+      - "8088:8080"
+      - "7077:7077"
+    networks:
+      - airflow_net
+    volumes:
+      - ./airflow/scripts:/opt/airflow/scripts
+      - ./airflow/data:/opt/airflow/data
+      - ./jars:/opt/spark/jars
+      - ./hive/hive-site.xml:/opt/bitnami/spark/conf/hive-site.xml
+
+    
+
+  spark-worker:
+    image: bitnami/spark:3.5.0
+    container_name: spark-worker
+    environment:
+      - SPARK_MODE=worker
+      - SPARK_MASTER_URL=spark://spark-master:7077
+      
+    depends_on:
+      - spark-master
+    ports:
+      - "8081:8081"
+    networks:
+      - airflow_net
+    volumes:
+      - ./airflow/scripts:/opt/airflow/scripts
+      - ./airflow/data:/opt/airflow/data
+      - ./jars:/opt/spark/jars
+      - ./hive/hive-site.xml:/opt/bitnami/spark/conf/hive-site.xml
+
+  hadoop-namenode:
+    image: bde2020/hadoop-namenode:2.0.0-hadoop3.2.1-java8
+    container_name: hadoop-namenode
+    environment:
+      - CLUSTER_NAME=hadoop
+      - CORE_CONF_fs_defaultFS=hdfs://hadoop-namenode:9000
+      - HDFS_CONF_dfs.namenode.name.dir=file:///hadoop/dfs/name
+      - HDFS_CONF_dfs.permissions.enabled=false
+      - HDFS_CONF_dfs.namenode.datanode.registration.ip-hostname-check=false
+    ports:
+      - "9870:9870"
+      - "9000:9000"
+    volumes:
+      - hadoop_namenode:/hadoop/dfs/name
+      - ./custom-hadoop-config/namenode-hdfs-site.xml:/etc/hadoop/hdfs-site.xml
+      - ./custom-hadoop-config/core-site.xml:/etc/hadoop/core-site.xml
+      
+    networks:
+      - airflow_net
+    hostname: hadoop-namenode
+  
+    
+
+  hadoop-datanode:
+    image: bde2020/hadoop-datanode:2.0.0-hadoop3.2.1-java8
+    container_name: hadoop-datanode
+    environment:
+      - CORE_CONF_fs_defaultFS=hdfs://hadoop-namenode:9000
+      - HDFS_CONF_dfs.datanode.data.dir=file:///hadoop/dfs/data
+      - HDFS_CONF_dfs.permissions.enabled=false
+      - HDFS_CONF_dfs.namenode.datanode.registration.ip-hostname-check=false
+      - HDFS_CONF_dfs.datanode.use.datanode.hostname=true
+      # - HDFS_CONF_dfs.datanode.hostname=hadoop-datanode
+      - HADOOP_CONF_DIR=/etc/hadoop
+      # - DATANODE_CONF_dfs.datanode.use.datanode.hostname=true
+      # - DATANODE_CONF_dfs.datanode.hostname=hadoop-datanode
+    ports:
+      - "9864:9864"
+    volumes:
+      - hadoop_datanode:/hadoop/dfs/data
+      - ./custom-hadoop-config/datanode-hdfs-site.xml:/etc/hadoop/hdfs-site.xml
+      - ./custom-hadoop-config/core-site.xml:/etc/hadoop/core-site.xml
+    networks:
+      - airflow_net
+    depends_on:
+      - hadoop-namenode
+    hostname: hadoop-datanode
+    
+    
+  
+  hive-metastore:
+    image: bde2020/hive:2.3.2-postgresql-metastore
+    container_name: hive-metastore
+    restart: always
+    environment:
+      - HIVE_CORE_CONF_javax_jdo_option_ConnectionURL=jdbc:postgresql://postgres:5432/metastore
+      - HIVE_CORE_CONF_javax_jdo_option_ConnectionDriverName=org.postgresql.Driver
+      - HIVE_CORE_CONF_javax_jdo_option_ConnectionUserName=airflow
+      - HIVE_CORE_CONF_javax_jdo_option_ConnectionPassword=airflow
+      - HIVE_METASTORE_USER=airflow
+      - HIVE_METASTORE_PASSWORD=airflow
+      - HIVE_METASTORE_DB_TYPE=postgres
+      - HIVE_METASTORE_DB_HOST=postgres
+      - HIVE_METASTORE_DB_NAME=metastore
+      - HIVE_METASTORE_DB_USER=airflow
+      - HIVE_METASTORE_DB_PASS=airflow
+    ports:
+      - "9083:9083"
+    networks:
+      - airflow_net
+    depends_on:
+      - postgres
+    volumes:
+      - ./hive/hive-site.xml:/opt/hive/conf/hive-site.xml
+    entrypoint: >
+      bash -c "
+        schematool -dbType postgres -initSchema --verbose || echo ' Schema already initialized';
+        echo ' Waiting for HDFS...';
+        until hdfs dfs -ls /; do
+          echo ' HDFS not ready. Retrying in 5s...';
+          sleep 5;
+        done;
+        echo ' HDFS is ready. Starting Metastore.';
+        /opt/hive/bin/hive --service metastore"
+
+    # entrypoint: >
+    #   bash -c "
+    #     schematool -dbType postgres -initSchema --verbose || echo 'Schema may already exist';
+    #     /entrypoint.sh /run.sh"
+
+
+  hive-server:
+    image: bde2020/hive:2.3.2-postgresql-metastore
+    restart: always
+    container_name: hive-server
+    environment:
+      - SERVICE_PRECONDITION=hive-metastore:9083
+      - CORE_CONF_fs_defaultFS=hdfs://hadoop-namenode:9000 
+    ports:
+      - "10000:10000"
+    networks:
+      - airflow_net
+    depends_on:
+      - hive-metastore
+    volumes:
+      - ./hive/hive-site.xml:/opt/hive/conf/hive-site.xml
+
+    
+
+networks:
+  airflow_net:
+    driver: bridge
+
+volumes:
+  hadoop_namenode:
+  hadoop_datanode:

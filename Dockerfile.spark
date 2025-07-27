@@ -1,0 +1,28 @@
+# Dockerfile.spark
+FROM bitnami/spark:3.5.0
+
+USER root
+
+# Install Python dependencies for Spark applications
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3-pip \
+    openjdk-11-jdk \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install PySpark and Kafka-Python
+RUN pip install pyspark==3.5.0 kafka-python faker pymysql requests
+
+
+# Set environment variables for Spark (if needed, already mostly in compose)
+ENV SPARK_HOME=/opt/bitnami/spark
+ENV PATH=$PATH:$SPARK_HOME/bin
+ENV PYSPARK_PYTHON=python3
+
+ENV NSS_WRAPPER_PASSWD=/tmp/passwd
+ENV NSS_WRAPPER_GROUP=/tmp/group
+
+RUN mkdir -p /tmp && chown -R 1001:1001 /tmp && chmod -R 777 /tmp
+
+
+USER 1001 

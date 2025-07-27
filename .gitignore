@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.env
+*.log
+*.db
+*.jar
+.parquet
+hive/warehouse/
+airflow/airflow.db
+spark-warehouse/
+test.py
+commands.txt
