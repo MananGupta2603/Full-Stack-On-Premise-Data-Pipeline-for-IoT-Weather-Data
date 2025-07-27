@@ -9,4 +9,3 @@ hive/warehouse/
 airflow/airflow.db
 spark-warehouse/
 test.py
-commands.txt

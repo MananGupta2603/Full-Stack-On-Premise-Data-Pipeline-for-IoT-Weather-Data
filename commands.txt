@@ -1,0 +1,371 @@
+1) Run mysql to check mock data inserted or not
+
+docker exec -it mysql bash
+mysql -u root -p
+Enter password: root
+
+---------------------------------------------------------------------------
+
+2)To run your `streaming_kafka_to_parquet.py` script inside your **Spark container**, follow these steps:
+
+---
+
+### ✅ 1. **Ensure Required JARs Exist**
+
+Your `jars` directory should contain at least the following:
+
+* `spark-sql-kafka-0-10_2.12-3.5.0.jar`
+* `kafka-clients-*.jar`
+* `spark-token-provider-kafka-0-10_2.12-3.5.0.jar`
+* `commons-pool2-*.jar`
+* `lz4-java-*.jar`, `snappy-java-*.jar`
+* (Optional) Logging libraries like `slf4j-api`
+
+These should be **mounted via Docker Compose** into:
+
+```yaml
+volumes:
+  - ./jars:/opt/spark/jars
+```
+
+---
+
+### ✅ 2. **Run the Script Inside Spark-Master Container**
+
+**Step A: Enter the container**
+
+```bash
+docker exec -it spark-master bash
+```
+
+**Step B: Run the Spark job**
+
+```bash
+/opt/bitnami/spark/bin/spark-submit \
+  --master spark://spark-master:7077 \
+  --jars /opt/spark/jars/spark-sql-kafka-0-10_2.12-3.5.0.jar,\
+/opt/spark/jars/spark-token-provider-kafka-0-10_2.12-3.5.0.jar,\
+/opt/spark/jars/kafka-clients-3.3.2.jar,\
+/opt/spark/jars/snappy-java-1.1.10.1.jar,\
+/opt/spark/jars/lz4-java-1.8.0.jar,\
+/opt/spark/jars/commons-pool2-2.11.1.jar,\
+/opt/spark/jars/slf4j-api-2.0.6.jar \
+  /opt/airflow/scripts/processing/spark_streaming/streaming_kafka_to_parquet.py
+```
+
+Make sure your Kafka is running and publishing messages to `weather-topic`.
+
+---
+
+### ✅ 3. **Check Output**
+
+After 5 minutes (as per your `.trigger(processingTime="5 minutes")`), it will write Parquet files to:
+
+```
+/opt/airflow/data/weather_parquet
+```
+
+You can inspect them by:
+
+```bash
+ls /opt/airflow/data/weather_parquet
+```
+
+---
+
+
+--------------------------------------------------------------------------------
+
+to run batch spark job
+
+docker exec -it spark-master bash
+spark-submit --jars /opt/spark/jars/mysql-connector-java-8.0.29.jar /opt/airflow/scripts/processing/spark_batch/batch_etl_to_hive_and_mysql.py
+
+---------------------------------------------------------------
+Option 2: Log into your Hadoop container and run it manually
+If you're just trying to get this working once or debug, run this from inside the Hadoop container:
+
+
+docker exec -it <hadoop-namenode-container> bash
+hdfs dfs -rm -r /user/hive/warehouse/final_table
+--------------------------------------------------------------
+
+To fix **HDFS permission issues** — especially errors like:
+
+```
+Permission denied: user=spark, access=WRITE, inode="/user/hive/warehouse":root:supergroup:drwxrwxr-x
+```
+
+You need to give **write permissions** to the `/user/hive/warehouse` directory **in HDFS**, so that the `spark` user (or your app user) can write to it.
+
+---
+
+## ✅ HDFS Command to Set Permissions (Run inside Hadoop NameNode container)
+
+```bash
+hdfs dfs -chmod -R 777 /user/hive/warehouse
+```
+
+This gives full read/write/execute permissions to everyone (for testing/dev purposes).
+
+---
+
+## 🛠️ Full Fix Steps (From Host):
+
+1. **Open a shell in your NameNode container**:
+
+   ```bash
+   docker exec -it hadoop-namenode bash
+   ```
+
+2. **Switch to the `hdfs` user (if needed)**:
+
+   ```bash
+   su - hdfs
+   ```
+
+3. **Run the permission fix**:
+
+   ```bash
+   hdfs dfs -chmod -R 777 /user/hive/warehouse
+   ```
+
+4. (Optional) To check ownership:
+
+   ```bash
+   hdfs dfs -ls /user/hive
+   ```
+
+---
+
+## ⚠️ Note:
+
+* `777` is okay for local development.
+* In production, use:
+
+  ```bash
+  hdfs dfs -chown -R spark:hive /user/hive/warehouse
+  hdfs dfs -chmod -R 770 /user/hive/warehouse
+  ```
+
+Let me know if you want this automated in a script like `hdfs-init.sh`.
+
+
+----------------------------------------------------------------------
+
+This new error confirms that **the Hive warehouse directory now has proper permissions**, but you're hitting a **DataNode availability issue**:
+
+> `File ... could only be written to 0 of the 1 minReplication nodes. There are 0 datanode(s) running...`
+
+### 🔥 Root Cause:
+
+HDFS cannot write the Parquet file because **no DataNodes are running** or successfully registered with the NameNode.
+
+---
+
+### ✅ Fix Steps:
+
+1. **Check DataNode Container Status**
+   Run in your terminal:
+
+```bash
+docker ps -a | grep hadoop-datanode
+```
+
+If it’s exited or restarting, run:
+
+```bash
+docker logs hadoop-datanode
+```
+
+Look for errors like:
+
+* `hostname cannot be resolved`
+* `All specified directories have failed to load`
+
+---
+
+2. **Fix Hostname Resolution (Docker Compose)**
+   In your `docker-compose.yml`, make sure `hadoop-namenode` and `hadoop-datanode` can talk to each other by hostname.
+
+Example fix:
+
+```yaml
+hadoop-datanode:
+  ...
+  extra_hosts:
+    - "hadoop-namenode:172.18.0.2"  # adjust to match your actual namenode container IP
+```
+
+Also for `hadoop-namenode`:
+
+```yaml
+extra_hosts:
+  - "hadoop-datanode:172.18.0.8"  # match your datanode IP
+```
+
+> 🧠 Tip: You can get actual container IPs with:
+
+```bash
+docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' hadoop-namenode
+```
+
+---
+
+3. **Ensure DataNode Volumes Exist**
+   Add a volume to persist DataNode metadata:
+
+```yaml
+hadoop-datanode:
+  ...
+  volumes:
+    - hadoop_datanode:/hadoop/dfs/data
+```
+
+Make sure it's declared at the bottom:
+
+```yaml
+volumes:
+  hadoop_datanode:
+  hadoop_namenode:
+```
+
+---
+
+4. **Rebuild Everything**
+
+```bash
+docker-compose down -v
+docker-compose up --build
+```
+
+Wait until the HDFS UI ([http://localhost:9870](http://localhost:9870)) shows **at least 1 live DataNode**.
+
+---
+
+### ✅ Then Re-run Spark
+
+Once HDFS has an active DataNode, your Spark ETL script writing to Hive will succeed.
+
+Let me know if you want help reviewing your `docker-compose.yml` or checking logs.
+
+
+--------------------------------------------------------------------------
+
+
+Perfect — your DataNode's IP is `172.18.0.12`.
+
+---
+
+### ✅ Final Step
+
+You now **must add this IP and hostname to the NameNode’s `/etc/hosts`** so it can resolve the DataNode properly.
+
+#### 🔧 Run inside the NameNode container:
+
+```bash
+docker exec -it hadoop-namenode bash
+echo "172.18.0.12 hadoop-datanode" >> /etc/hosts
+```
+
+> ✅ If `/etc/hosts` is not writable due to being read-only, try restarting the container with a writable hosts file — or create a custom image that injects the host entry.
+
+---
+> 🧠 Tip: You can get actual container IPs with:
+
+```bash
+docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' hadoop-namenode
+docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' hadoop-datanode
+
+### 🔄 Then restart the DataNode:
+
+```bash
+docker restart hadoop-datanode
+```
+
+Give it about 30 seconds, then run:
+
+```bash
+docker exec -it hadoop-namenode hdfs dfsadmin -report
+```
+
+---
+
+### ✅ Expected Output (Success Case):
+
+You should now see:
+
+```
+Datanodes available: 1
+```
+
+Let me know the report output after this fix.
+
+
+--------------------------------------------------------------------------------
+
+✅ Your Spark job finished successfully:
+
+```
+ETL Completed: Final table written to Hive and MySQL.
+```
+
+---
+
+### 🔍 To Check the Data in **Hive**
+
+You need to open the **HiveServer** or use **Beeline** client inside the `hive-server` container.
+
+---
+
+### 📌 Step-by-Step to Check Hive Table
+
+1. **Enter the Hive Server container**:
+
+```bash
+docker exec -it hive-server bash
+```
+
+2. **Launch Beeline** to connect to the Hive metastore:
+
+```bash
+beeline -u jdbc:hive2://hive-server:10000 -n hive
+```
+
+3. **List Databases**:
+
+```sql
+SHOW DATABASES;
+```
+
+4. **Use your target database** (if any):
+
+```sql
+USE default;  -- or your specific DB name
+```
+
+5. **List Tables**:
+
+```sql
+SHOW TABLES;
+```
+
+6. **Check the Final Table Data**:
+
+```sql
+SELECT * FROM final_table LIMIT 10;
+```
+
+---
+
+### ✅ Tip
+
+If `beeline` is not installed or gives issues, you can try the same with the `hive` CLI (older interface):
+
+```bash
+hive
+```
+
+Then continue with the SQL commands.
+
+Let me know the table name if you're unsure, or if you want to script this check automatically.
