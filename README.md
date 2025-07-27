@@ -83,8 +83,6 @@ A hypothetical weather analytics company requires a data pipeline to:
 ---
 
 
----
-
 ## ✅ Prerequisites
 
 * Docker & Docker Compose
