@@ -29,7 +29,7 @@ df_mysql = spark.read \
 # -------------------------------
 # Example: Join on city and filter where temp > 25
 df_joined = df_csv.join(df_mysql, on="id", how="inner") \
-    .filter(df_csv.temperature > 25) \
+    .filter(df_csv.temperature > 20) \
     .select(
         df_csv.timestamp.alias("iot_time"),
         df_csv.name,

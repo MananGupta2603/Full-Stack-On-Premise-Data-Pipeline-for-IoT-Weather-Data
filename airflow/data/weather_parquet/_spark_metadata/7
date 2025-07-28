@@ -1,0 +1,2 @@
+v1
+{"path":"file:///opt/airflow/data/weather_parquet/part-00000-c9e7c52f-6534-44a2-9114-1283399b89fd-c000.snappy.parquet","size":3218,"isDir":false,"modificationTime":1753678501725,"blockReplication":1,"blockSize":33554432,"action":"add"}
